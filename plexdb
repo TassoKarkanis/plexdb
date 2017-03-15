@@ -1,0 +1,206 @@
+#!/usr/bin/env python
+
+import exceptions
+import json
+import os
+import os.path
+import re
+import shutil
+import string
+
+class Error(exceptions.Exception):
+    def __init__( self, value ):
+        self.value = value
+
+    def __str__( self ):
+        return self.value
+        
+
+class PlexLinker:
+    def __init__( self, config ):
+        self.config = config
+
+    def linkShow( self, show, section ):
+        # read the show files
+        name = show['name']
+        path = show['path']
+        seasons = self.readShow( path )
+        
+        # check directories and clean up
+        plexDir = self.config['plexDir']
+        if not os.path.isdir(plexDir):
+            msg = "Plex dir not found: %s" % plexDir
+            raise Error(msg)
+
+        tvDir = os.path.join(plexDir, section)
+        if not os.path.isdir(tvDir):
+            msg = "Plex '%s' dir not found: %s" % (section, tvDir)
+            raise Error(msg)
+        
+        showDir = os.path.join(tvDir, name)
+        if os.path.isdir(showDir):
+            shutil.rmtree(showDir)
+        elif os.path.isfile(showDir):
+            msg = "Plex show directory is a file: %s" % showDir
+            raise Error(msg)
+            
+        # create the directory and populate it
+        os.mkdir(showDir)
+
+        for season in seasons:
+            for e in season['episodes']:
+                # form the basename
+                name = 's%02de%02d%s' % (season['number'], e['number'], e['extension'] )
+                linkPath = os.path.join(showDir, name)
+                os.symlink(e['path'], linkPath)
+
+
+    def readShow( self, path ):
+        if not os.path.isdir(path):
+            msg = 'Path not found: ' + path
+            raise Error(msg)
+
+        # read the seasons
+        seasons = []
+        for f in os.listdir(path):
+            seasonPath = os.path.join(path, f )
+            if seasonPath in self.config['ignoreDirs']:
+                continue
+
+            if os.path.isdir(seasonPath):
+                p = re.compile("^(Season|Series) [0-9]+$")
+                if re.match(p, f):
+                    number = int(f[7:])
+                    season = {}
+                    season['number'] = number
+                    season['episodes'] = self.readSeason( seasonPath, number )
+                    seasons.append( season )
+                else:
+                    msg = 'Cannot parse season name: %s' % seasonPath
+                    raise Error(msg)
+            else:
+                msg = 'Expecting Season directory: %s' % seasonPath
+                raise Error(msg)
+        
+        # sort by season
+        seasons = sorted(seasons, key=lambda s: s['number'])
+        
+        # print them out
+        # for i in range(0, len(seasons)):
+        #     season = seasons[i]
+        #     print( "Season %d" % (i + 1))
+        # 
+        #     episodes = season['episodes']
+        #     for j in range(0, len(episodes)):
+        #         print( '  %s' % episodes[j]['path'] )
+
+        return seasons
+        
+    def readSeason( self, path, number ):
+        patterns = [ 
+            # my usual convention '15 blah'         
+            ['^([0-9][0-9])[ \.]', 1], 
+            
+            # the most standard 's03e15'
+            ['.*[sS]([0-9][0-9])[eE]([0-9][0-9]).*', 2],
+            
+            # '3x15'
+            ['.*([0-9])x([0-9][0-9]).*', 2],
+            
+            # unusual ' 315 '
+            ['.* ([0-9])([0-9][0-9]) .*', 2],
+            
+            # unusual '^3-15 '
+            ['^([0-9])-([0-9][0-9]) .*', 2],
+            
+            # unusual ' 3-15 '
+            ['.* ([0-9])-([0-9][0-9]) .*', 2],
+            
+            # unusual 'Season 3 Episode 15'
+            ['.*Season ([0-9]) Episode ([0-9][0-9]).*', 2],
+            
+            # unusual 'Book 3 Chapter 15'
+            ['.*Book ([0-9]).*Chapter ([0-9][0-9]).*', 2],
+        ]
+
+        # compile the patterns
+        for pattern in patterns:
+            pattern[0] = re.compile(pattern[0])
+
+        episodes = []
+        for f in os.listdir(path):
+            episode = {}
+            
+            episodePath = os.path.join(path, f)
+            episode['path'] = episodePath
+                
+            # parse the extension
+            index = string.rfind(episodePath, '.')
+            if index == -1:
+                msg = 'Episode has no extension: %s' % episodePath
+                raise Error(msg)
+            episode['extension'] = episodePath[index:]
+                
+            # try my usual convention
+            matched = False
+            for pattern in patterns:
+                m = pattern[0].match(f)
+                if m:
+                    matched = True
+                    if pattern[1] == 2:
+                        s = int(m.groups()[0])
+                        e = int(m.groups()[1])
+                        if not s == number:
+                            msg = 'Parsed season(%d) failed to match(%d)' % (s, number)
+                            raise Error(msg)
+                    elif pattern[1] == 1:
+                        e = int(m.groups()[0])
+                    
+                    episode['number'] = e
+                    episodes.append(episode)
+                    break
+                    
+            if not matched:
+                msg = 'File not matched: %s' % episodePath
+                raise Error(msg)
+
+        # sort by number
+        return sorted(episodes, key=lambda ep: ep['number'])
+
+
+if __name__ == '__main__':
+    # load the config file
+    home = os.getenv( 'HOME' )
+    path = '%s/.plexdb' % home
+    config = json.load(open(path))
+    linker = PlexLinker( config )
+    
+    # link the TV shows
+    for show in config['tvShows']:
+        linker.linkShow( show, 'TV Shows' )
+
+    # link the grown-up movies
+    moviesPath = os.path.join(config['plexDir'], "Movies")
+    for movie in config['movies']:
+        if not os.path.isfile(movie['path']):
+            msg = 'File not found: %s' % movie['path']
+            raise Error(msg)
+        dest = os.path.join(moviesPath, movie['name'])
+        if os.path.islink(dest):
+            os.remove(dest)
+        os.symlink(movie['path'], dest)
+    
+    # link the kids TV shows
+    for show in config['kidsTVShows']:
+        linker.linkShow( show, 'Kids TV Shows' )
+
+    # link the kids movies
+    kidsMoviesPath = os.path.join(config['plexDir'], "Kids Movies")
+    for movie in config['kidsMovies']:
+        if not os.path.isfile(movie['path']):
+            msg = 'File not found: %s' % movie['path']
+            raise Error(msg)
+        dest = os.path.join(kidsMoviesPath, movie['name'])
+        if os.path.islink(dest):
+            os.remove(dest)
+        os.symlink(movie['path'], dest)
