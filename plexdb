@@ -1,6 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
-import exceptions
 import json
 import os
 import os.path
@@ -8,7 +7,7 @@ import re
 import shutil
 import string
 
-class Error(exceptions.Exception):
+class Error(Exception):
     def __init__( self, value ):
         self.value = value
 
@@ -135,7 +134,7 @@ class PlexLinker:
             episode['path'] = episodePath
                 
             # parse the extension
-            index = string.rfind(episodePath, '.')
+            index = episodePath.rfind('.')
             if index == -1:
                 msg = 'Episode has no extension: %s' % episodePath
                 raise Error(msg)
